@@ -1,10 +1,20 @@
+! MUST BE RUN USING GFORTRAN FOR UNICODE SUPPORT
+! Curtis D. Abell (Aug 2022)
+!
 module kinds
     implicit none
     integer, parameter :: DP = kind(1.0d0)
-    integer, parameter, public :: ucs4 = selected_char_kind('ISO_10646')
+    integer, parameter, public :: ucs4 = selected_char_kind('ISO_10646') ! unicode char kind
 end module kinds
 
 module ANSIColoursModule
+    ! Creates a colour_type, which contains the ANSI colour codes.
+    ! Can access each colour via colors%red etc.
+    !
+    ! Can also get access those colours using a string, via
+    ! the function select_colour('red') etc. The kind of the char
+    ! input determines if the ANSI colour code will be unicode or not
+    !
     use kinds
     implicit none
     private
@@ -119,26 +129,30 @@ module x256ColoursModule
     end type colourmap_type
 
     type(colourmap_type) :: cmap_yellowred, cmap_blue, cmap_green
-    type(colourmap_type) :: cmap_pink, cmap_cyanpurple
+    type(colourmap_type) :: cmap_pink, cmap_cyanpurple, cmap_greyscale
 
 contains
 
     subroutine setup_colourmaps()
       implicit none
 
-      integer :: nCols = 6
-
-      call cmap_yellowred%init_colourmap(nCols)
-      call cmap_blue%init_colourmap(nCols)
-      call cmap_green%init_colourmap(nCols)
-      call cmap_pink%init_colourmap(nCols)
-      call cmap_cyanpurple%init_colourmap(nCols)
-
+      call cmap_yellowred%init_colourmap(6)
       call cmap_yellowred%fill_colourmap([226,220,214,208,202,196])
+
+      call cmap_blue%init_colourmap(6)
       call cmap_blue%fill_colourmap([51,45,39,33,27,21])
+
+      call cmap_green%init_colourmap(6)
       call cmap_green%fill_colourmap([46,40,34,28,22,16])
+
+      call cmap_pink%init_colourmap(6)
       call cmap_pink%fill_colourmap([194,188,182,176,170,164])
+
+      call cmap_cyanpurple%init_colourmap(6)
       call cmap_cyanpurple%fill_colourmap([123,117,111,105,99,93])
+
+      call cmap_greyscale%init_colourmap(6)
+      call cmap_greyscale%fill_colourmap([255,249,243,237,233,232])
 
     end subroutine setup_colourmaps
 
@@ -186,6 +200,29 @@ contains
         end if
     end subroutine fill_colourmap
 
+
+    function select_colourmap(cmap_string) result(cmap)
+        implicit none
+        character(len=*), intent(in) :: cmap_string
+        type(colourmap_type) :: cmap
+        select case (trim(cmap_string))
+        case ('yellowred')
+            cmap = cmap_yellowred
+        case ('blue')
+            cmap = cmap_blue
+        case ('green')
+            cmap = cmap_green
+        case ('pink')
+            cmap = cmap_pink
+        case ('cyanpurple')
+            cmap = cmap_cyanpurple
+        case ('greyscale')
+            cmap = cmap_greyscale
+        case default
+            cmap = cmap_greyscale
+        end select
+    end function select_colourmap
+
 end module x256ColoursModule
 
 
@@ -215,9 +252,11 @@ program mandelbrot
     character(len=128) :: temp_fileName
 
     logical :: print_divergence
-
-    logical :: colour_ANSI
+    logical :: do256Colouring
     type(colourmap_type) :: cmap
+    character(len=16) :: cmap_default = 'blue'
+    character(len=16) :: cmd_argument
+    integer :: argument_status
 
     character(kind=ucs4,len=16) :: colourChoice
     character(kind=ucs4,len=16) :: colour, reset
@@ -225,9 +264,20 @@ program mandelbrot
 
     integer iZoom
 
+    ! Initialise the colourmaps
     call setup_colourmaps()
-    call cmap%init_colourmap(cmap_blue%nColours)
-    cmap = cmap_blue
+
+    do256Colouring = .true.
+    print_divergence = .true.
+
+    ! Get the colourmap that was passed from the command line
+    ! If nothing was passed, use the default (blue)
+    call get_command_argument(1, cmd_argument)
+    if (cmd_argument.eq.'') then
+        cmap = select_colourmap(cmap_default)
+    else
+        cmap = select_colourmap(cmd_argument)
+    end if
 
     ! Make it so the default write supports unicode
     open(output_unit, encoding='utf-8')
@@ -235,33 +285,33 @@ program mandelbrot
     ! Solid block unicode character
     solid_block = char(int(z'2588'), kind=ucs4)
 
-    print_divergence = .true.
-
+    ! colour choice for ANSI colouring
     colourChoice = ucs4_'red'
     colour = select_colour(colourChoice)
     reset = colours_ucs4%reset
 
-    ! get number of rows and columns in the terminal
+    ! hacky way get number of rows and columns in the terminal,
+    ! unfortunately theres no way to get the output from a shell command natively
     temp_fileName = 'temp_terminal_size.out'
     call execute_command_line('stty size >> ' // trim(temp_fileName))
     open(101, file=temp_fileName, action='read')
     read(101,*) row, col
-    close(101)
+    close(101) ! status='delete' crashes if unable to delete (as in WSL2)
     call execute_command_line('rm ' // trim(temp_fileName))
     row = row - 3 ! allow for bash prompt
 
-    ! n_max = 4096
-    z0 = 0.0_DP
+    z0 = cmplx(0.0_DP, 0.0_DP, DP)
     z_max = 2.0_DP
 
+    ! iZoom = 1 or 2 to look at zoomed in regions of the Mandelbrot set
     iZoom = 0
     select case(iZoom)
     case(1)
+        n_max = 1024
         xmin = -0.7497_DP
         xmax = -0.7485_DP
         ymin = 0.115_DP
         ymax = 0.116_DP
-        n_max = 1024
     case(2)
         n_max = 4096
         xmin = -0.235085_DP
@@ -272,10 +322,12 @@ program mandelbrot
         n_max = 256
     end select
 
-    colour_ANSI = .false.
+    ! For divergence colouring, find the maximum value
+    !    n will take after scaling
     n_print_max = int(exp(real(cmap%nColours+2,DP))+1.0_DP)
     n_print_max = int(log(real(n_print_max,DP))) - 1
 
+    ! Associate each "pixel" in the terminal with a complex number c
     do iy = 1, row
        y = ymin + (ymax-ymin)/real(row-1,DP) * real(iy-1,DP)
        do ix = 1, col
@@ -284,6 +336,7 @@ program mandelbrot
           c = cmplx(x,y,DP)
           z = z0
 
+          ! iterate z to test divergence
           n = 0
           do
              n = n + 1
@@ -292,7 +345,7 @@ program mandelbrot
           end do
 
           if (print_divergence) then
-              if (colour_ANSI) then
+              if (.not.do256Colouring) then
                   ! --------------------Display set in ANSI colours-------------------
                   n_print = int(log(real(n/8)))+1 ! scale divergence between 0 and 4
                   if (n_print.eq.4) then
@@ -315,26 +368,19 @@ program mandelbrot
                   ! ---------------Display divergence using x256 colours--------------
                   ! dodgily scale the divergence logarithmically, should end up with nColours+1
                   n_print = int(real(n,DP)/real(n_max,DP) * (exp(real(cmap%nColours+2,DP))+1.0_DP))
-                  n_print = n_print_max - (int(log(real(n_print,DP))) - 1)
-
-                  ! n_print = cmap%nColours+1 - int(real(n,DP)/real(n_max,DP))*(cmap%nColours+1)
-                  ! if (n_print.gt.0) then
-                  !     n_print = int(log(real(n_print,DP)))
-                  ! end if
+                  n_print = n_print_max - (int(log(real(n_print,DP))) - 1) ! n_print_max reverses the colourmap
 
                   if (n.eq.n_max) then
                       write(*, '(a)', advance='no') colours_ucs4%black &
-                          & // trim(solid_block) // trim(colours_ucs4%reset)
+                          & // trim(solid_block) // trim(reset)
                   else
                       write(*, '(a)', advance='no') cmap%colourmap(n_print) &
-                          & // trim(solid_block) // trim(colours_ucs4%reset)
+                          & // trim(solid_block) // trim(reset)
                   end if
-
-                  ! write(*, '(i1)', advance='no') n_print
-
               end if
 
           else
+              ! -----Just colour the set, and leave the background uncoloured-----
               if (n.eq.n_max) then
                   write(*, '(a)', advance='no') trim(colour) &
                       & // trim(solid_block) // trim(reset)
@@ -347,12 +393,12 @@ program mandelbrot
        write(*,*)
     end do
 
-    ! write(*,*) cmap%colourmap(6) // ucs4_'hello there' // colours_ucs4%reset
-
 
 contains
 
     subroutine mandel(z, c)
+        ! Mandelbrot set iterates according to z=z**2 + c
+        ! Other powers increse the number of axes of symmetry (8 is nice)
         complex(DP), intent(inout) :: z
         complex(DP), intent(in) :: c
         integer :: z_pow
