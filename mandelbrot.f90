@@ -318,6 +318,12 @@ program mandelbrot
         xmax = -0.235165_DP
         ymin = 0.827175_DP
         ymax = 0.827255_DP
+    case(3)
+        n_max = 4096
+        xmin = -7.018d-1 - 3.5d-5
+        xmax = -7.018d-1 - 1.0d-5
+        ymin = 3.527d-1 + 5.7d-5
+        ymax = 3.527d-1 + 4.4d-5
     case default
         n_max = 256
     end select
